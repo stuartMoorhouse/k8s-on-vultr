@@ -1,0 +1,7 @@
+controller:
+  replicaCount: 1
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  kind: DaemonSet
+  service:
+    enabled: false

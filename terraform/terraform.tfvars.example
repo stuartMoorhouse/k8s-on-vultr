@@ -1,0 +1,21 @@
+# OVH region (e.g., GRA7, SBG5, BHS5, WAW1)
+region = "GRA7"
+
+# Prefix for all resource names
+prefix = "k8s"
+
+# Name of the SSH keypair (must match the key uploaded or managed by Terraform)
+ssh_key_name = "my-ssh-key"
+
+# OpenStack flavor for the control plane node
+# See: https://www.ovhcloud.com/en/public-cloud/prices/
+control_plane_flavor = "b3-8"
+
+# OpenStack flavor for worker nodes
+worker_flavor = "b3-8"
+
+# Number of worker nodes
+worker_count = 2
+
+# OS image name (must exist in your OVH region)
+image_name = "Ubuntu 22.04"

@@ -1,0 +1,7 @@
+region               = "GRA7"
+prefix               = "k8s"
+ssh_key_name         = "my-ssh-key"
+control_plane_flavor = "b3-8"
+worker_flavor        = "b3-8"
+worker_count         = 2
+image_name           = "Ubuntu 22.04"

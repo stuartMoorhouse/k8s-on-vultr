@@ -1,0 +1,14 @@
+alertmanager:
+  enabled: false
+
+prometheus-pushgateway:
+  enabled: false
+
+server:
+  retention: "7d"
+  service:
+    type: ClusterIP
+  persistentVolume:
+    enabled: true
+    storageClass: "longhorn"
+    size: 10Gi
