@@ -1,12 +1,17 @@
-apiVersion: kubeadm.k8s.io/v1beta4
+apiVersion: kubeadm.k8s.io/v1beta3
 kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: "${CONTROL_PLANE_PRIVATE_IP}"
+  bindPort: 6443
 nodeRegistration:
   criSocket: unix:///var/run/containerd/containerd.sock
+  kubeletExtraArgs:
+    node-ip: "${CONTROL_PLANE_PRIVATE_IP}"
 ---
-apiVersion: kubeadm.k8s.io/v1beta4
+apiVersion: kubeadm.k8s.io/v1beta3
 kind: ClusterConfiguration
 kubernetesVersion: "1.31.0"
-controlPlaneEndpoint: "CONTROL_PLANE_IP:6443"
+controlPlaneEndpoint: "${CONTROL_PLANE_PRIVATE_IP}:6443"
 networking:
   podSubnet: "192.168.0.0/16"
   serviceSubnet: "10.96.0.0/12"

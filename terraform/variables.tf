@@ -1,7 +1,7 @@
 variable "region" {
-  description = "OVH region for VPS instances"
+  description = "Vultr region"
   type        = string
-  default     = "GRA7"
+  default     = "ams"
 }
 
 variable "prefix" {
@@ -10,21 +10,10 @@ variable "prefix" {
   default     = "k8s"
 }
 
-variable "ssh_key_name" {
-  description = "Name of the SSH key pair in OVH"
+variable "plan" {
+  description = "Vultr plan for all instances (vc2-2c-4gb = 2 vCPU, 4GB RAM)"
   type        = string
-}
-
-variable "control_plane_flavor" {
-  description = "Flavor (size) for control plane VPS"
-  type        = string
-  default     = "b3-8"
-}
-
-variable "worker_flavor" {
-  description = "Flavor (size) for worker VPS instances"
-  type        = string
-  default     = "b3-8"
+  default     = "vc2-2c-4gb"
 }
 
 variable "worker_count" {
@@ -33,8 +22,8 @@ variable "worker_count" {
   default     = 2
 }
 
-variable "image_name" {
-  description = "OS image for VPS instances"
-  type        = string
-  default     = "Ubuntu 22.04"
+variable "os_id" {
+  description = "Vultr OS ID (2284 = Ubuntu 22.04 LTS)"
+  type        = number
+  default     = 2284
 }

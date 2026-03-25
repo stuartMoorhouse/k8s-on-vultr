@@ -22,7 +22,8 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o BatchMode=yes"
+SSH_KEY="$TERRAFORM_DIR/id_ed25519"
+SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o BatchMode=yes"
 
 ###############################################################################
 # Helpers
@@ -73,11 +74,19 @@ phase1_terraform_outputs() {
     CONTROL_PLANE_IP=$(terraform output -raw control_plane_ip 2>&1) || \
         fatal "Failed to read control_plane_ip from Terraform:\n$CONTROL_PLANE_IP"
 
+    CONTROL_PLANE_PRIVATE_IP=$(terraform output -raw control_plane_private_ip 2>&1) || \
+        fatal "Failed to read control_plane_private_ip from Terraform:\n$CONTROL_PLANE_PRIVATE_IP"
+
     WORKER_IPS_JSON=$(terraform output -json worker_ips 2>&1) || \
         fatal "Failed to read worker_ips from Terraform:\n$WORKER_IPS_JSON"
 
     # Parse worker IPs from JSON array
     mapfile -t WORKER_IPS < <(echo "$WORKER_IPS_JSON" | python3 -c "import sys,json; [print(ip) for ip in json.load(sys.stdin)]")
+
+    WORKER_PRIVATE_IPS_JSON=$(terraform output -json worker_private_ips 2>&1) || \
+        fatal "Failed to read worker_private_ips from Terraform:\n$WORKER_PRIVATE_IPS_JSON"
+
+    mapfile -t WORKER_PRIVATE_IPS < <(echo "$WORKER_PRIVATE_IPS_JSON" | python3 -c "import sys,json; [print(ip) for ip in json.load(sys.stdin)]")
 
     if [[ -z "$CONTROL_PLANE_IP" ]]; then
         fatal "control_plane_ip is empty"
@@ -88,7 +97,7 @@ phase1_terraform_outputs() {
 
     ALL_IPS=("$CONTROL_PLANE_IP" "${WORKER_IPS[@]}")
 
-    ok "Control plane: $CONTROL_PLANE_IP"
+    ok "Control plane: $CONTROL_PLANE_IP (private: $CONTROL_PLANE_PRIVATE_IP)"
     ok "Workers: ${WORKER_IPS[*]}"
 }
 
@@ -159,14 +168,8 @@ REMOTE_SCRIPT
 phase3_init_control_plane() {
     info "Phase 3: Initializing control plane on $CONTROL_PLANE_IP..."
 
-    # Prepare init-config.yaml with actual IP
-    local tmp_config
-    tmp_config=$(mktemp)
-    sed "s/CONTROL_PLANE_IP/${CONTROL_PLANE_IP}/g" "$KUBEADM_DIR/init-config.yaml" > "$tmp_config"
-
-    # Copy config to control plane
-    scp_to "$tmp_config" "$CONTROL_PLANE_IP" "/root/init-config.yaml"
-    rm -f "$tmp_config"
+    # Copy Terraform-generated init config (IPs already substituted)
+    scp_to "$KUBEADM_DIR/init-config.generated.yaml" "$CONTROL_PLANE_IP" "/root/init-config.yaml"
 
     # Run kubeadm init
     run_ssh "$CONTROL_PLANE_IP" bash -s <<'REMOTE_SCRIPT'
@@ -227,6 +230,13 @@ echo ">>> Calico CNI installed."
 REMOTE_SCRIPT
 
     ok "Calico CNI running"
+
+    # Allow VPC traffic on all nodes (Calico sets INPUT policy to DROP)
+    info "Adding iptables rules to allow VPC traffic..."
+    for ip in "${ALL_IPS[@]}"; do
+        run_ssh "$ip" "iptables -I INPUT 1 -s 10.0.0.0/24 -j ACCEPT"
+        ok "iptables rule added on $ip"
+    done
 }
 
 ###############################################################################
@@ -236,16 +246,23 @@ REMOTE_SCRIPT
 phase5_join_workers() {
     info "Phase 5: Joining worker nodes..."
 
-    for worker_ip in "${WORKER_IPS[@]}"; do
-        info "Joining worker $worker_ip..."
+    for i in "${!WORKER_IPS[@]}"; do
+        local worker_ip="${WORKER_IPS[$i]}"
+        local worker_private_ip="${WORKER_PRIVATE_IPS[$i]}"
+        info "Joining worker $worker_ip (private: $worker_private_ip)..."
 
-        # Prepare join-config.yaml with actual values
+        # Substitute token, CA hash, and add node-ip into join config
         local tmp_config
         tmp_config=$(mktemp)
-        sed -e "s/CONTROL_PLANE_IP/${CONTROL_PLANE_IP}/g" \
-            -e "s/TOKEN/${JOIN_TOKEN}/g" \
-            -e "s/CA_CERT_HASH/${CA_CERT_HASH}/g" \
-            "$KUBEADM_DIR/join-config.yaml" > "$tmp_config"
+        sed -e "s/PLACEHOLDER_TOKEN/${JOIN_TOKEN}/g" \
+            -e "s/PLACEHOLDER_HASH/${CA_CERT_HASH}/g" \
+            "$KUBEADM_DIR/join-config.generated.yaml" > "$tmp_config"
+
+        # Inject node-ip under nodeRegistration so kubelet registers with the private IP
+        local tmp_config2
+        tmp_config2=$(mktemp)
+        awk -v ip="$worker_private_ip" '/criSocket:/{print; print "  kubeletExtraArgs:"; print "    node-ip: \"" ip "\""; next}1' "$tmp_config" > "$tmp_config2"
+        mv "$tmp_config2" "$tmp_config"
 
         scp_to "$tmp_config" "$worker_ip" "/root/join-config.yaml"
         rm -f "$tmp_config"

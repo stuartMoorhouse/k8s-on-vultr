@@ -108,42 +108,74 @@ SSH to each node and run:
 
 ```bash
 # Disable swap (required by kubelet)
-sudo swapoff -a
-sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+swapoff -a
+sed -i '/\sswap\s/d' /etc/fstab
+
+# Load kernel modules
+modprobe overlay
+modprobe br_netfilter
+cat > /etc/modules-load.d/k8s.conf <<EOF
+overlay
+br_netfilter
+EOF
+
+# Set sysctl params
+cat > /etc/sysctl.d/k8s.conf <<EOF
+net.bridge.bridge-nf-call-iptables  = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward                 = 1
+EOF
+sysctl --system
 
 # Install containerd
-sudo apt-get update
-sudo apt-get install -y containerd
-sudo mkdir -p /etc/containerd
-containerd config default | sudo tee /etc/containerd/config.toml
-sudo systemctl restart containerd
-sudo systemctl enable containerd
+apt-get update
+apt-get install -y containerd
+mkdir -p /etc/containerd
+containerd config default > /etc/containerd/config.toml
+sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+systemctl restart containerd
+systemctl enable containerd
 
-# Install kubeadm, kubelet, kubectl
-sudo apt-get update
-sudo apt-get install -y apt-transport-https ca-certificates curl
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
-sudo apt-get update
-sudo apt-get install -y kubelet kubeadm kubectl
-sudo apt-mark hold kubelet kubeadm kubectl
+# Install kubeadm, kubelet, kubectl (v1.31)
+apt-get install -y apt-transport-https ca-certificates curl gpg
+mkdir -p /etc/apt/keyrings
+K8S_VERSION=v1.31
+K8S_KEYRING=/etc/apt/keyrings/kubernetes-apt-keyring.gpg
+curl -fsSL "https://pkgs.k8s.io/core:/stable:/${K8S_VERSION}/deb/Release.key" \
+  | gpg --dearmor -o "${K8S_KEYRING}"
+echo "deb [signed-by=${K8S_KEYRING}] https://pkgs.k8s.io/core:/stable:/${K8S_VERSION}/deb/ /" \
+  > /etc/apt/sources.list.d/kubernetes.list
+apt-get update
+apt-get install -y kubelet kubeadm kubectl
+apt-mark hold kubelet kubeadm kubectl
 ```
 
 ### 3. Initialize Control Plane
 
-On the control plane node:
+From your local machine, copy the generated init config to the control plane:
 
 ```bash
-# Copy init-config.yaml to control plane node
-scp ../kubeadm/init-config.yaml user@control-plane-ip:~/
+scp -i terraform/id_ed25519 -o StrictHostKeyChecking=no \
+  kubeadm/init-config.generated.yaml root@<control-plane-ip>:/root/init-config.yaml
+```
 
-# Initialize cluster
-sudo kubeadm init --config init-config.yaml
+Then SSH to the control plane:
 
-# Configure kubectl for your user
+```bash
+ssh -i terraform/id_ed25519 -o StrictHostKeyChecking=no root@<control-plane-ip>
+```
+
+On the control plane node, initialize the cluster. The init config sets
+`advertiseAddress` to the private VPC IP so that the `kubernetes` service
+endpoint uses the private network (workers must be able to reach 10.96.0.1
+which DNATs to this address):
+
+```bash
+kubeadm init --config /root/init-config.yaml
+
+# Configure kubectl
 mkdir -p $HOME/.kube
-sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-sudo chown $(id -u):$(id -g) $HOME/.kube/config
+cp -f /etc/kubernetes/admin.conf $HOME/.kube/config
 
 # Verify control plane components
 kubectl get pods -n kube-system
@@ -154,13 +186,22 @@ kubectl get pods -n kube-system
 On the control plane node:
 
 ```bash
-kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml
 
-# Verify CNI is running
-kubectl get pods -n kube-system -l k8s-app=calico-node
+# Wait for Calico pods to be ready
+kubectl -n kube-system wait --for=condition=ready pod -l k8s-app=calico-node --timeout=300s
 ```
 
-### 5. Join Worker Nodes
+### 5. Allow VPC Traffic (all nodes)
+
+Calico sets the iptables INPUT policy to DROP, which blocks inter-node
+communication over the VPC private network. On **all 3 nodes**, run:
+
+```bash
+iptables -I INPUT 1 -s 10.0.0.0/24 -j ACCEPT
+```
+
+### 6. Join Worker Nodes
 
 On the control plane, get the join command:
 
@@ -168,19 +209,28 @@ On the control plane, get the join command:
 kubeadm token create --print-join-command
 ```
 
-On each worker node, run the output command:
+On each worker node, first configure kubelet to use the node's **private VPC IP**
+(without this, the node registers with its public IP and the API server cannot
+reach kubelet on port 10250):
 
 ```bash
-sudo kubeadm join <control-plane-ip>:6443 --token <token> --discovery-token-ca-cert-hash sha256:<hash>
+echo "KUBELET_EXTRA_ARGS=--node-ip=<worker-private-ip>" > /etc/default/kubelet
+```
+
+Then run the join command from above:
+
+```bash
+kubeadm join <control-plane-private-ip>:6443 --token <token> --discovery-token-ca-cert-hash sha256:<hash>
 ```
 
 Verify nodes are ready:
 
 ```bash
-kubectl get nodes
+kubectl get nodes -o wide
+# The INTERNAL-IP column should show private VPC IPs (10.0.0.x)
 ```
 
-### 6. Install Storage Provisioner (Longhorn)
+### 7. Install Storage Provisioner (Longhorn)
 
 ```bash
 # Install Longhorn for persistent volumes (CKA essential)
@@ -196,7 +246,7 @@ kubectl patch storageclass longhorn -p '{"metadata": {"annotations":{"storagecla
 kubectl get sc
 ```
 
-### 7. Deploy Monitoring Stack
+### 8. Deploy Monitoring Stack
 
 ```bash
 # Add Helm repositories
@@ -217,7 +267,7 @@ helm install kube-state-metrics prometheus-community/kube-state-metrics \
   -f ../helm/kube-state-metrics/values.yaml
 ```
 
-### 8. Deploy Ingress Controller
+### 9. Deploy Ingress Controller
 
 ```bash
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
@@ -228,6 +278,53 @@ kubectl create namespace ingress-nginx
 helm install nginx-ingress ingress-nginx/ingress-nginx \
   -n ingress-nginx \
   -f ../helm/nginx-ingress/values.yaml
+```
+
+## Accessing the Cluster Locally
+
+The API server listens on the control plane's private VPC IP, which isn't
+reachable from your local machine. Use an SSH tunnel to forward port 6443:
+
+```bash
+# Start an SSH tunnel (runs in the background)
+ssh -i terraform/id_ed25519 -o StrictHostKeyChecking=no \
+  -L 6443:10.0.0.4:6443 -N -f root@<control-plane-public-ip>
+```
+
+Copy the kubeconfig from the control plane and configure it for local use:
+
+```bash
+scp -i terraform/id_ed25519 -o StrictHostKeyChecking=no \
+  root@<control-plane-public-ip>:/etc/kubernetes/admin.conf ./kubeconfig
+
+# Rewrite the server URL to use the SSH tunnel
+sed -i '' 's|https://10.0.0.4:6443|https://127.0.0.1:6443|' ./kubeconfig
+```
+
+Add it to your existing kubeconfig:
+
+```bash
+# Option A: Merge into your default kubeconfig
+KUBECONFIG=~/.kube/config:./kubeconfig kubectl config view --flatten > /tmp/merged-config
+mv /tmp/merged-config ~/.kube/config
+
+# Option B: Use it standalone for this session
+export KUBECONFIG=$(pwd)/kubeconfig
+```
+
+Switch context and verify:
+
+```bash
+kubectl config get-contexts
+kubectl config use-context kubernetes-admin@kubernetes
+kubectl get nodes
+```
+
+To stop the SSH tunnel later:
+
+```bash
+# Find and kill the tunnel process
+ps aux | grep 'ssh.*6443' | grep -v grep | awk '{print $2}' | xargs kill
 ```
 
 ## Accessing Cluster Components

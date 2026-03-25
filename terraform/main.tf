@@ -2,221 +2,126 @@
 # SSH Key
 # =============================================================================
 
-resource "openstack_compute_keypair_v2" "ssh" {
-  name       = "${var.prefix}-key"
-  region     = var.region
-  public_key = file(pathexpand("~/.ssh/id_rsa.pub"))
+resource "tls_private_key" "ssh" {
+  algorithm = "ED25519"
+}
+
+resource "local_file" "ssh_private_key" {
+  content         = tls_private_key.ssh.private_key_openssh
+  filename        = "${path.module}/id_ed25519"
+  file_permission = "0600"
+}
+
+resource "local_file" "ssh_public_key" {
+  content         = tls_private_key.ssh.public_key_openssh
+  filename        = "${path.module}/id_ed25519.pub"
+  file_permission = "0644"
+}
+
+resource "vultr_ssh_key" "cluster" {
+  name    = "${var.prefix}-key"
+  ssh_key = tls_private_key.ssh.public_key_openssh
 }
 
 # =============================================================================
-# Network
+# VPC (Private Network)
 # =============================================================================
 
-data "openstack_networking_network_v2" "public" {
-  name     = "Ext-Net"
-  region   = var.region
-  external = true
-}
-
-resource "openstack_networking_network_v2" "cluster" {
-  name           = "${var.prefix}-network"
+resource "vultr_vpc" "cluster" {
+  description    = "${var.prefix} cluster network"
   region         = var.region
-  admin_state_up = true
-}
-
-resource "openstack_networking_subnet_v2" "cluster" {
-  name            = "${var.prefix}-subnet"
-  region          = var.region
-  network_id      = openstack_networking_network_v2.cluster.id
-  cidr            = "10.0.0.0/24"
-  ip_version      = 4
-  dns_nameservers = ["213.186.33.99", "1.1.1.1"]
-}
-
-resource "openstack_networking_router_v2" "cluster" {
-  name                = "${var.prefix}-router"
-  region              = var.region
-  admin_state_up      = true
-  external_network_id = data.openstack_networking_network_v2.public.id
-}
-
-resource "openstack_networking_router_interface_v2" "cluster" {
-  region    = var.region
-  router_id = openstack_networking_router_v2.cluster.id
-  subnet_id = openstack_networking_subnet_v2.cluster.id
+  v4_subnet      = "10.0.0.0"
+  v4_subnet_mask = 24
 }
 
 # =============================================================================
-# Security Group
+# Firewall
 # =============================================================================
 
-resource "openstack_networking_secgroup_v2" "cluster" {
-  name        = "${var.prefix}-secgroup"
-  region      = var.region
-  description = "Security group for ${var.prefix} Kubernetes cluster"
+resource "vultr_firewall_group" "cluster" {
+  description = "${var.prefix} cluster firewall"
 }
 
 # SSH
-resource "openstack_networking_secgroup_rule_v2" "ssh" {
-  region            = var.region
-  security_group_id = openstack_networking_secgroup_v2.cluster.id
-  direction         = "ingress"
-  ethertype         = "IPv4"
+resource "vultr_firewall_rule" "ssh" {
+  firewall_group_id = vultr_firewall_group.cluster.id
   protocol          = "tcp"
-  port_range_min    = 22
-  port_range_max    = 22
-  remote_ip_prefix  = "0.0.0.0/0"
+  ip_type           = "v4"
+  subnet            = "0.0.0.0"
+  subnet_size       = 0
+  port              = "22"
 }
 
 # Kubernetes API
-resource "openstack_networking_secgroup_rule_v2" "k8s_api" {
-  region            = var.region
-  security_group_id = openstack_networking_secgroup_v2.cluster.id
-  direction         = "ingress"
-  ethertype         = "IPv4"
+resource "vultr_firewall_rule" "k8s_api" {
+  firewall_group_id = vultr_firewall_group.cluster.id
   protocol          = "tcp"
-  port_range_min    = 6443
-  port_range_max    = 6443
-  remote_ip_prefix  = "0.0.0.0/0"
-}
-
-# etcd
-resource "openstack_networking_secgroup_rule_v2" "etcd" {
-  region            = var.region
-  security_group_id = openstack_networking_secgroup_v2.cluster.id
-  direction         = "ingress"
-  ethertype         = "IPv4"
-  protocol          = "tcp"
-  port_range_min    = 2379
-  port_range_max    = 2380
-  remote_ip_prefix  = "10.0.0.0/24"
-}
-
-# kubelet
-resource "openstack_networking_secgroup_rule_v2" "kubelet" {
-  region            = var.region
-  security_group_id = openstack_networking_secgroup_v2.cluster.id
-  direction         = "ingress"
-  ethertype         = "IPv4"
-  protocol          = "tcp"
-  port_range_min    = 10250
-  port_range_max    = 10252
-  remote_ip_prefix  = "10.0.0.0/24"
+  ip_type           = "v4"
+  subnet            = "0.0.0.0"
+  subnet_size       = 0
+  port              = "6443"
 }
 
 # NodePort range
-resource "openstack_networking_secgroup_rule_v2" "nodeports" {
-  region            = var.region
-  security_group_id = openstack_networking_secgroup_v2.cluster.id
-  direction         = "ingress"
-  ethertype         = "IPv4"
+resource "vultr_firewall_rule" "nodeports" {
+  firewall_group_id = vultr_firewall_group.cluster.id
   protocol          = "tcp"
-  port_range_min    = 30000
-  port_range_max    = 32767
-  remote_ip_prefix  = "0.0.0.0/0"
-}
-
-# All TCP within private subnet (inter-node)
-resource "openstack_networking_secgroup_rule_v2" "internal_tcp" {
-  region            = var.region
-  security_group_id = openstack_networking_secgroup_v2.cluster.id
-  direction         = "ingress"
-  ethertype         = "IPv4"
-  protocol          = "tcp"
-  port_range_min    = 1
-  port_range_max    = 65535
-  remote_ip_prefix  = "10.0.0.0/24"
-}
-
-# All UDP within private subnet (inter-node)
-resource "openstack_networking_secgroup_rule_v2" "internal_udp" {
-  region            = var.region
-  security_group_id = openstack_networking_secgroup_v2.cluster.id
-  direction         = "ingress"
-  ethertype         = "IPv4"
-  protocol          = "udp"
-  port_range_min    = 1
-  port_range_max    = 65535
-  remote_ip_prefix  = "10.0.0.0/24"
-}
-
-# Calico BGP
-resource "openstack_networking_secgroup_rule_v2" "calico_bgp" {
-  region            = var.region
-  security_group_id = openstack_networking_secgroup_v2.cluster.id
-  direction         = "ingress"
-  ethertype         = "IPv4"
-  protocol          = "tcp"
-  port_range_min    = 179
-  port_range_max    = 179
-  remote_ip_prefix  = "10.0.0.0/24"
-}
-
-# Calico VXLAN
-resource "openstack_networking_secgroup_rule_v2" "calico_vxlan" {
-  region            = var.region
-  security_group_id = openstack_networking_secgroup_v2.cluster.id
-  direction         = "ingress"
-  ethertype         = "IPv4"
-  protocol          = "udp"
-  port_range_min    = 4789
-  port_range_max    = 4789
-  remote_ip_prefix  = "10.0.0.0/24"
+  ip_type           = "v4"
+  subnet            = "0.0.0.0"
+  subnet_size       = 0
+  port              = "30000:32767"
 }
 
 # ICMP
-resource "openstack_networking_secgroup_rule_v2" "icmp" {
-  region            = var.region
-  security_group_id = openstack_networking_secgroup_v2.cluster.id
-  direction         = "ingress"
-  ethertype         = "IPv4"
+resource "vultr_firewall_rule" "icmp" {
+  firewall_group_id = vultr_firewall_group.cluster.id
   protocol          = "icmp"
-  remote_ip_prefix  = "0.0.0.0/0"
+  ip_type           = "v4"
+  subnet            = "0.0.0.0"
+  subnet_size       = 0
 }
 
 # =============================================================================
 # Compute Instances
 # =============================================================================
 
-resource "openstack_compute_instance_v2" "control_plane" {
-  name            = "${var.prefix}-control-plane"
-  region          = var.region
-  flavor_name     = var.control_plane_flavor
-  image_name      = var.image_name
-  key_pair        = openstack_compute_keypair_v2.ssh.name
-  security_groups = [openstack_networking_secgroup_v2.cluster.name]
-
-  network {
-    name = data.openstack_networking_network_v2.public.name
-  }
-
-  network {
-    name = openstack_networking_network_v2.cluster.name
-  }
-
-  depends_on = [
-    openstack_networking_router_interface_v2.cluster,
-  ]
+resource "vultr_instance" "control_plane" {
+  label             = "${var.prefix}-control-plane"
+  hostname          = "${var.prefix}-control-plane"
+  region            = var.region
+  plan              = var.plan
+  os_id             = var.os_id
+  ssh_key_ids       = [vultr_ssh_key.cluster.id]
+  firewall_group_id = vultr_firewall_group.cluster.id
+  vpc_ids           = [vultr_vpc.cluster.id]
 }
 
-resource "openstack_compute_instance_v2" "worker" {
-  count           = var.worker_count
-  name            = "${var.prefix}-worker-${count.index + 1}"
-  region          = var.region
-  flavor_name     = var.worker_flavor
-  image_name      = var.image_name
-  key_pair        = openstack_compute_keypair_v2.ssh.name
-  security_groups = [openstack_networking_secgroup_v2.cluster.name]
+resource "vultr_instance" "worker" {
+  count             = var.worker_count
+  label             = "${var.prefix}-worker-${count.index + 1}"
+  hostname          = "${var.prefix}-worker-${count.index + 1}"
+  region            = var.region
+  plan              = var.plan
+  os_id             = var.os_id
+  ssh_key_ids       = [vultr_ssh_key.cluster.id]
+  firewall_group_id = vultr_firewall_group.cluster.id
+  vpc_ids           = [vultr_vpc.cluster.id]
+}
 
-  network {
-    name = data.openstack_networking_network_v2.public.name
-  }
+# =============================================================================
+# Generated kubeadm configs (with real IPs substituted)
+# =============================================================================
 
-  network {
-    name = openstack_networking_network_v2.cluster.name
-  }
+resource "local_file" "init_config" {
+  filename = "${path.module}/../kubeadm/init-config.generated.yaml"
+  content = templatefile("${path.module}/../kubeadm/init-config.yaml", {
+    CONTROL_PLANE_PRIVATE_IP = vultr_instance.control_plane.internal_ip
+  })
+}
 
-  depends_on = [
-    openstack_networking_router_interface_v2.cluster,
-  ]
+resource "local_file" "join_config" {
+  filename = "${path.module}/../kubeadm/join-config.generated.yaml"
+  content = templatefile("${path.module}/../kubeadm/join-config.yaml", {
+    CONTROL_PLANE_PRIVATE_IP = vultr_instance.control_plane.internal_ip
+  })
 }
