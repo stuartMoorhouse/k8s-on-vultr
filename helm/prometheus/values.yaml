@@ -12,3 +12,7 @@ server:
     enabled: true
     storageClass: "longhorn"
     size: 10Gi
+  containerSecurityContext:
+    capabilities:
+      drop:
+        - NET_RAW

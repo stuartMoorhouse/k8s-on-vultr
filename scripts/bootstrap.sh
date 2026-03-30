@@ -302,6 +302,29 @@ REMOTE_SCRIPT
 }
 
 ###############################################################################
+# Phase 5b: Harden kubelet configuration
+###############################################################################
+
+phase5b_harden_kubelet() {
+    info "Phase 5b: Hardening kubelet configuration on all nodes..."
+
+    for ip in "${ALL_IPS[@]}"; do
+        run_ssh "$ip" bash -s <<'REMOTE_SCRIPT'
+set -euo pipefail
+KUBELET_CONFIG="/var/lib/kubelet/config.yaml"
+
+# CIS 4.2.9: Set eventRecordQPS to an appropriate level
+if ! grep -q 'eventRecordQPS' "$KUBELET_CONFIG"; then
+    echo "eventRecordQPS: 5" >> "$KUBELET_CONFIG"
+fi
+
+systemctl restart kubelet
+REMOTE_SCRIPT
+        ok "Kubelet hardened on $ip"
+    done
+}
+
+###############################################################################
 # Phase 6: Install Longhorn
 ###############################################################################
 
@@ -459,6 +482,7 @@ main() {
     phase3_init_control_plane
     phase4_install_calico
     phase5_join_workers
+    phase5b_harden_kubelet
     phase6_install_longhorn
     phase7_install_helm_charts
     phase8_verify

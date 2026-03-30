@@ -1,0 +1,48 @@
+.gitignore
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.tfplan
+
+# Claude Code
+.claude/
+CLAUDE.md
+about-this-template.md
+product-requirement-prompts.md
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Secrets (never commit)
+*.pem
+*.key
+.env
+.env.*
+terraform.tfvars
+!terraform.tfvars.example
+kubeconfig
+
+# Generated SSH keys
+terraform/id_ed25519
+terraform/id_ed25519.pub
+
+# Generated kubeadm configs (contain IPs)
+kubeadm/*.generated.yaml
+
+# misc
+scratch.md
