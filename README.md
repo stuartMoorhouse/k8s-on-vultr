@@ -81,6 +81,11 @@ Cluster Services
 │   │   └── values.yaml        # KSM Helm values
 │   └── nginx-ingress/
 │       └── values.yaml        # Ingress controller values
+├── prometheus/
+│   ├── prometheus-config-map.yml   # Prometheus scrape configs / remote write
+│   ├── prometheus-deployment.yml   # Prometheus deployment manifest
+│   └── prometheus-service.yml      # Prometheus service manifest
+├── elastic-agent.yml               # Elastic Agent DaemonSet (Fleet-managed)
 └── README.md
 ```
 
@@ -279,6 +284,22 @@ helm install nginx-ingress ingress-nginx/ingress-nginx \
   -n ingress-nginx \
   -f ../helm/nginx-ingress/values.yaml
 ```
+
+### 10. Deploy Additional Manifests (Prometheus Config, Elastic Agent)
+
+These are applied automatically by `bootstrap.sh` (Phase 7b), but can also be
+applied manually:
+
+```bash
+kubectl apply -f prometheus/prometheus-config-map.yml
+kubectl apply -f prometheus/prometheus-deployment.yml
+kubectl apply -f prometheus/prometheus-service.yml
+kubectl apply -f elastic-agent.yml
+```
+
+The Elastic Agent manifest contains Fleet enrollment credentials. If you are
+recreating the cluster, verify that the `FLEET_ENROLLMENT_TOKEN` and `FLEET_URL`
+in `elastic-agent.yml` are still valid.
 
 ## Accessing the Cluster Locally
 

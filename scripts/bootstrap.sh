@@ -424,6 +424,41 @@ REMOTE_SCRIPT
 }
 
 ###############################################################################
+# Phase 7b: Deploy additional Kubernetes manifests
+###############################################################################
+
+phase7b_deploy_manifests() {
+    info "Phase 7b: Deploying additional Kubernetes manifests..."
+
+    # Copy manifest files to control plane
+    run_ssh "$CONTROL_PLANE_IP" "mkdir -p /root/manifests/prometheus"
+    scp_to "$PROJECT_DIR/prometheus/prometheus-config-map.yml" "$CONTROL_PLANE_IP" "/root/manifests/prometheus/prometheus-config-map.yml"
+    scp_to "$PROJECT_DIR/prometheus/prometheus-deployment.yml" "$CONTROL_PLANE_IP" "/root/manifests/prometheus/prometheus-deployment.yml"
+    scp_to "$PROJECT_DIR/prometheus/prometheus-service.yml" "$CONTROL_PLANE_IP" "/root/manifests/prometheus/prometheus-service.yml"
+    scp_to "$PROJECT_DIR/elastic-agent.yml" "$CONTROL_PLANE_IP" "/root/manifests/elastic-agent.yml"
+
+    run_ssh "$CONTROL_PLANE_IP" bash -s <<'REMOTE_SCRIPT'
+set -euo pipefail
+
+echo ">>> Applying Prometheus manifests..."
+kubectl apply -f /root/manifests/prometheus/prometheus-config-map.yml
+kubectl apply -f /root/manifests/prometheus/prometheus-deployment.yml
+kubectl apply -f /root/manifests/prometheus/prometheus-service.yml
+
+echo ">>> Applying Elastic Agent manifest..."
+kubectl apply -f /root/manifests/elastic-agent.yml
+
+echo ">>> Waiting for Prometheus pods..."
+kubectl -n monitoring wait --for=condition=ready pod -l app=prometheus --timeout=120s 2>/dev/null || \
+    warn "Prometheus pods not ready yet — check manually"
+
+echo ">>> Additional manifests deployed."
+REMOTE_SCRIPT
+
+    ok "Additional manifests deployed"
+}
+
+###############################################################################
 # Phase 8: Verify
 ###############################################################################
 
@@ -485,6 +520,7 @@ main() {
     phase5b_harden_kubelet
     phase6_install_longhorn
     phase7_install_helm_charts
+    phase7b_deploy_manifests
     phase8_verify
 }
 
